@@ -1,0 +1,10 @@
+# sbt and Scala build output
+target/
+project/project/
+.bsp/
+.metals/
+
+# IDE and local system files
+.idea/
+*.iml
+.DS_Store
