@@ -1,161 +1,121 @@
 object BoyerMoore {
-
-  private val ALPHABET_SIZE = 256
-
   def alphabetIndex(c: Char): Int = c.toInt
 
   def matchLength(S: String, idx1: Int, idx2: Int): Int = {
+    val text = S
     var i = idx1
     var j = idx2
-    var matchCount = 0
-
-    while (i < S.length && j < S.length && S(i) == S(j)) {
-      matchCount += 1
+    while (i < text.length && j < text.length && text(i) == text(j)) {
       i += 1
       j += 1
     }
-
-    matchCount
+    i - idx1
   }
 
+  /** Z(i) is the length of the prefix matching the suffix starting at i. */
   def fundamentalPreprocess(S: String): Array[Int] = {
-    if (S.isEmpty) {
-      Array.empty
-    } else if (S.length == 1) {
-      Array(1)
-    } else {
-      val z = new Array[Int](S.length)
-      z(0) = S.length
-      z(1) = matchLength(S, 0, 1)
-
-      for (i <- 2 to 1 + z(1)) {
-        z(i) = z(1) - i + 1
-      }
-
-      var l = 0
-      var r = 0
-
-      for (i <- 2 + z(1) until S.length) {
-        if (i <= r) {
-          val k = i - l
-          val b = z(k)
-          val a = r - i + 1
-
-          if (b < a) {
-            z(i) = b
-          } else {
-            z(i) = a + matchLength(S, a, r + 1)
-            l = i
-            r = i + z(i) - 1
-          }
-        } else {
-          z(i) = matchLength(S, 0, i)
-
-          if (z(i) > 0) {
-            l = i
-            r = i + z(i) - 1
-          }
+    val text = S
+    val z = new Array[Int](text.length)
+    if (text.nonEmpty) {
+      z(0) = text.length
+      var left = 0
+      var right = 0
+      for (i <- 1 until text.length) {
+        if (i <= right) z(i) = math.min(right - i + 1, z(i - left))
+        while (i + z(i) < text.length && text(z(i)) == text(i + z(i))) {
+          z(i) += 1
+        }
+        if (i + z(i) - 1 > right) {
+          left = i
+          right = i + z(i) - 1
         }
       }
-
-      z
     }
+    z
   }
 
+  /** Legacy 256-row table for Latin-1 patterns; search itself supports UTF-16. */
   def badCharacterTable(S: String): Array[Array[Int]] = {
-    if (S.isEmpty) {
-      Array.fill(ALPHABET_SIZE)(Array(-1))
-    } else {
-      val R = Array.fill(ALPHABET_SIZE)(Array(-1))
-      val alpha = Array.fill(ALPHABET_SIZE)(-1)
-
-      for ((c, i) <- S.zipWithIndex) {
-        alpha(alphabetIndex(c)) = i
-
-        for (j <- alpha.indices) {
-          R(j) :+= alpha(j)
-        }
-      }
-
-      R
+    require(S.forall(c => alphabetIndex(c) < 256),
+      "badCharacterTable accepts only Latin-1 characters; use stringSearch for other text")
+    val table = Array.fill(256, S.length + 1)(-1)
+    for ((character, row) <- badCharacterRows(S)) {
+      table(alphabetIndex(character)) = row
     }
+    table
+  }
+
+  /** Each row contains the last occurrence strictly before a pattern index. */
+  private def badCharacterRows(pattern: String): Map[Char, Array[Int]] = {
+    pattern.distinct.iterator.map { character =>
+      val positions = new Array[Int](pattern.length + 1)
+      var last = -1
+      for (i <- pattern.indices) {
+        positions(i) = last
+        if (pattern(i) == character) last = i
+      }
+      positions(pattern.length) = last
+      character -> positions
+    }.toMap
   }
 
   def goodSuffixTable(S: String): Array[Int] = {
-    val L = Array.fill(S.length)(-1)
-    val N = fundamentalPreprocess(S.reverse).reverse
-
-    for (j <- 0 until S.length - 1) {
-      val i = S.length - N(j)
-      if (i != S.length) {
-        L(i) = j
-      }
+    val pattern = S
+    val table = Array.fill(pattern.length)(-1)
+    // Search compares UTF-16 units, so reverse Char units rather than code points.
+    val suffixLengths = fundamentalPreprocess(pattern.toCharArray.reverse.mkString).reverse
+    for (j <- 0 until pattern.length - 1) {
+      val i = pattern.length - suffixLengths(j)
+      if (i != pattern.length) table(i) = j
     }
-
-    L
+    table
   }
 
   def fullShiftTable(S: String): Array[Int] = {
-    val F = new Array[Int](S.length)
-    val Z = fundamentalPreprocess(S)
-
+    val pattern = S
+    val table = new Array[Int](pattern.length)
+    val z = fundamentalPreprocess(pattern)
     var longest = 0
-
-    for ((zv, i) <- Z.reverse.zipWithIndex) {
-      longest = math.max(zv, longest)
-      F(S.length - i - 1) = longest
+    for (i <- pattern.indices.reverse) {
+      if (z(i) == pattern.length - i) longest = z(i)
+      table(i) = longest
     }
-
-    F
+    table
   }
 
+  /** Find all matches, including overlaps, using zero-based UTF-16 offsets. */
   def stringSearch(P: String, T: String): List[Int] = {
-    if (P.isEmpty || T.isEmpty || T.length < P.length) {
-      List.empty
-    } else {
-      var matches = List.empty[Int]
-      val R = badCharacterTable(P)
-      val L = goodSuffixTable(P)
-      val F = fullShiftTable(P)
+    val pattern = P
+    val text = T
+    if (pattern.isEmpty || text.length < pattern.length) return List.empty
 
-      var k = P.length - 1
-      var previousK = -1
+    val matches = List.newBuilder[Int]
+    val badCharacters = badCharacterRows(pattern)
+    val goodSuffixes = goodSuffixTable(pattern)
+    val fullShifts = fullShiftTable(pattern)
+    var end = pattern.length - 1
 
-      while (k < T.length) {
-        var i = P.length - 1
-        var h = k
-
-        while (i >= 0 && h > previousK && P(i) == T(h)) {
-          i -= 1
-          h -= 1
-        }
-        if (i == -1 || h == previousK) {
-          matches :+= k - P.length + 1
-          k += P.length - F(1)
-          if (P.length > 1) {
-            k = math.max(k, previousK + 1)
-          }
-        } else {
-          val charShift = i - R(alphabetIndex(T(h)))(i)
-
-          val suffixShift =
-            if (i + 1 == P.length) {
-              1
-            } else if (L(i + 1) == -1) {
-              P.length - F(i + 1)
-            } else {
-              P.length - 1 - L(i + 1)
-            }
-
-          val shift = math.max(charShift, suffixShift)
-          previousK = if (shift >= i + 1) k else previousK
-          k += shift
-          k = math.max(k, previousK + 1)  // Добавлен этот блок для учета значения из таблицы L
-
-        }
+    while (end < text.length) {
+      var i = pattern.length - 1
+      var position = end
+      while (i >= 0 && pattern(i) == text(position)) {
+        i -= 1
+        position -= 1
       }
-
-      matches
+      if (i < 0) {
+        matches += end - pattern.length + 1
+        val suffix = if (pattern.length > 1) fullShifts(1) else 0
+        end += pattern.length - suffix
+      } else {
+        val previous = badCharacters.get(text(position)).fold(-1)(_(i))
+        val characterShift = i - previous
+        val suffixShift =
+          if (i + 1 == pattern.length) 1
+          else if (goodSuffixes(i + 1) == -1) pattern.length - fullShifts(i + 1)
+          else pattern.length - 1 - goodSuffixes(i + 1)
+        end += math.max(characterShift, suffixShift)
+      }
     }
+    matches.result()
   }
 }
